@@ -7,7 +7,140 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
+	"bufio"
+	"runtime"
+	"strings"
+	"flag"
+	"sync"
 )
+
+// This channel has no buffer, so it only accepts input when something is ready
+// to take it out. This keeps the reading from getting ahead of the writers.
+var workQueue = make(chan string)
+var totalProcessed int
+var totalProcessedLock sync.Mutex
+
+func main() {
+  // var err error
+  runtime.GOMAXPROCS(runtime.NumCPU())
+
+	filename := "../../zone_100_pts_edited.csv"
+	logPath := "../../importer.log"
+
+	// todo: pass file paths via command line
+	// var filename string
+	// var logPath string
+  var workerCount int
+  // flag.StringVar(&filename, "filename", "data.csv", "Enter a filename")
+  // flag.StringVar(&logPath, "log_path", "", "Enter a logfile path")
+  flag.IntVar(&workerCount, "workers", 8, "Enter the number of concurrent workers for processing data")
+  flag.Parse()
+
+  if len(logPath) > 0 {
+    logFile, _ := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0664)
+    log.SetOutput(logFile)
+  }
+	fmt.Println(filename)
+
+	if len(filename) == 0 {
+    log.Fatal("filename required")
+  }
+
+  // Now read them all off, concurrently.
+  for i := 0; i < workerCount; i++ {
+    go worker(workQueue)
+  }
+  readFile(filename)
+}
+
+// Read the lines into the work queue.
+func readFile(filename string) {
+  cmd := exec.Command("cat", filename)
+
+  stdout, err := cmd.StdoutPipe()
+  if err != nil {
+    log.Fatalf("Couldn't setup StdoutPipe: %v", err)
+  }
+
+  // start the command after having set up the pipe
+  if err := cmd.Start(); err != nil {
+    log.Fatalf("Couldn't open file for reading: %v", err)
+  }
+
+  // var scanner *Scanner
+  scanner := bufio.NewScanner(stdout)
+
+  for scanner.Scan() {
+    line := scanner.Text()
+    workQueue <- line
+  }
+  // Close the channel so everyone reading from it knows we're done.
+  close(workQueue)
+}
+
+func worker(queue <-chan string) {
+  for line := range queue {
+    // Do the work with the line.
+    items := strings.Split(line, ",")
+    street := items[8]
+		zip := items[9]
+
+		fmt.Println("street: ",street)
+		fmt.Println("zip: ",zip)
+  }
+}
+
+func queryAPI() {
+	key := "my secret key"
+	address := "13800 OLD MORRO RD"
+	zipcode := "93422"
+	// QueryEscape escapes the key string so
+	// it can be safely placed inside a URL query
+	escapedKey := url.QueryEscape(key)
+	escapedAddress := url.QueryEscape(address)
+	escapedZipcode := url.QueryEscape(zipcode)
+
+	url := fmt.Sprintf("http://www.zillow.com/webservice/GetDeepSearchResults.htm?zws-id=%s&address=%s&citystatezip=%s", escapedKey, escapedAddress, escapedZipcode)
+
+	// Build the request
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Fatal("NewRequest: ", err)
+		return
+	}
+
+	// For control over HTTP client headers,
+	// redirect policy, and other settings,
+	// create a Client
+	// A Client is an HTTP client
+	client := &http.Client{}
+
+	// Send the request via a client
+	// Do sends an HTTP request and
+	// returns an HTTP response
+	res, err := client.Do(req)
+	if err != nil {
+		log.Fatal("Do: ", err)
+		return
+	}
+
+	// Callers should close resp.Body
+	// when done reading from it
+	// Defer the closing of the body
+	defer res.Body.Close()
+
+	// fill record with results
+	record := SearchResults{}
+
+	// parse the XML
+	if err := xml.NewDecoder(res.Body).Decode(&record); err != nil {
+		fmt.Println("Error:", err)
+		os.Exit(1)
+	} else if len(record.Results) != 0 {
+		fmt.Println("Results:", record.Results[0])
+	}
+}
 
 // setup Zillow's Deep Search data model
 type Links struct {
@@ -101,55 +234,4 @@ type SearchResults struct {
   Request SearchRequest `xml:"request"`
   Message Message       `xml:"message"`
   Results []Results `xml:"response>results"`
-}
-
-func main() {
-	key := "my secret key"
-	address := "13800 OLD MORRO RD"
-	zipcode := "93422"
-	// QueryEscape escapes the key string so
-	// it can be safely placed inside a URL query
-	escapedKey := url.QueryEscape(key)
-	escapedAddress := url.QueryEscape(address)
-	escapedZipcode := url.QueryEscape(zipcode)
-
-	url := fmt.Sprintf("http://www.zillow.com/webservice/GetDeepSearchResults.htm?zws-id=%s&address=%s&citystatezip=%s", escapedKey, escapedAddress, escapedZipcode)
-
-	// Build the request
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		log.Fatal("NewRequest: ", err)
-		return
-	}
-
-	// For control over HTTP client headers,
-	// redirect policy, and other settings,
-	// create a Client
-	// A Client is an HTTP client
-	client := &http.Client{}
-
-	// Send the request via a client
-	// Do sends an HTTP request and
-	// returns an HTTP response
-	res, err := client.Do(req)
-	if err != nil {
-		log.Fatal("Do: ", err)
-		return
-	}
-
-	// Callers should close resp.Body
-	// when done reading from it
-	// Defer the closing of the body
-	defer res.Body.Close()
-
-	// fill record with results
-	record := SearchResults{}
-
-	// parse the XML
-	if err := xml.NewDecoder(res.Body).Decode(&record); err != nil {
-		fmt.Println("Error:", err)
-		os.Exit(1)
-	} else if len(record.Results) != 0 {
-		fmt.Println("Results:", record.Results[0])
-	}
 }
