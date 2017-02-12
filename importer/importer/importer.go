@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"runtime"
 	"strings"
+	"strconv"
 	"flag"
 	"sync"
 	"database/sql"
@@ -41,6 +42,7 @@ func main() {
 	// var filename string
 	// var logPath string
   var workerCount int
+	var counter = 0
   // flag.StringVar(&filename, "filename", "data.csv", "Enter a filename")
   // flag.StringVar(&logPath, "log_path", "", "Enter a logfile path")
 	// flag.StringVar(&pgHost, "pg_host", "localhost", "Enter a postgres hostname")
@@ -76,15 +78,49 @@ func main() {
 	fmt.Println("Successfully connected!")
 
   // Now read them all off, concurrently.
-  // for i := 0; i < workerCount; i++ {
-  //   go worker(workQueue)
-  // }
-  // readFile(filename)
-	
+  for i := 0; i < workerCount; i++ {
+    go worker(workQueue)
+  }
+  readFile(filename, counter)
+}
+
+func cacheWriter(oid int64) {
+	fileHandle, err := os.OpenFile("../../cache.txt", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0664)
+	if err != nil {
+	  panic(err)
+	}
+	writer := bufio.NewWriter(fileHandle)
+	defer fileHandle.Close()
+
+	fmt.Fprintln(writer, oid)
+	writer.Flush()
+}
+
+func cacheReader(oid int64) bool{
+	var recordExists bool = false
+	fileHandle, err := os.Open("../../cache.txt")
+	if err != nil {
+	  panic(err)
+	}
+	defer fileHandle.Close()
+	fileScanner := bufio.NewScanner(fileHandle)
+
+	for fileScanner.Scan() {
+		textNumber, _ := strconv.ParseInt(fileScanner.Text(), 10, 64)
+		// fmt.Println(reflect.TypeOf(oid))
+		if oid == textNumber {
+			recordExists = true
+			break
+			// fmt.Println(textNumber)
+		} else {
+			recordExists = false
+		}
+	}
+	return recordExists
 }
 
 // Read the lines into the work queue.
-func readFile(filename string) {
+func readFile(filename string, counter int) {
   cmd := exec.Command("cat", filename)
 
   stdout, err := cmd.StdoutPipe()
@@ -101,7 +137,8 @@ func readFile(filename string) {
   scanner := bufio.NewScanner(stdout)
 
   for scanner.Scan() {
-    line := scanner.Text()
+		line := scanner.Text()
+		counter++
     workQueue <- line
   }
   // Close the channel so everyone reading from it knows we're done.
@@ -109,14 +146,33 @@ func readFile(filename string) {
 }
 
 func worker(queue <-chan string) {
-  for line := range queue {
-    // Do the work with the line.
-    items := strings.Split(line, ",")
-    street := items[8]
-		zip := items[9]
 
-		fmt.Println("street: ",street)
-		fmt.Println("zip: ",zip)
+	for line := range queue {
+		var cacheResult bool
+		// Do the work with the line.
+    items := strings.Split(line, ",")
+
+		oid, _ := strconv.ParseInt(items[0], 10, 64)
+		// oid := items[0]
+		// ostreet := items[8]
+		// ozip := items[9]
+		// ocity := items[10]
+		// olat := items[13]
+		// olon := items[14]
+		// otype := items[15]
+		// ozone := items[17]
+
+		cacheResult = cacheReader(oid)
+
+		if cacheResult == true {
+			log.Printf("Already imported: %v\n", oid)
+			fmt.Println("cached?:", cacheResult, "oid:", oid)
+		} else {
+			cacheWriter(oid)
+			log.Printf("Importing: %v\n", oid)
+			fmt.Println("cached?:", cacheResult, "oid:", oid)
+		}
+
   }
 }
 
